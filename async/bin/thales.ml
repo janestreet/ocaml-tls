@@ -138,7 +138,10 @@ let to_own_cert own_cert : (Tls.Config.own_cert, [ `Msg of string ]) result Asyn
 let on_some f = function Some x -> Async.(f x >>| fun x -> Some x) | None -> Async.return None
 
 let handle callback t peer =
-  Async.Thread_safe.block_on_async (fun () -> callback t peer) |> function
+  Async.Thread_safe.block_on_async
+    (fun () ->
+       let open Async in
+       Tls_async.reader_and_writer t >>= fun (rd, wr, cl) -> callback rd wr cl peer) |> function
   | Ok () -> ()
   | Error (Tls_async.Tls_alert e) ->
     Fmt.epr "!> %s.\n%!" (Tls.Packet.alert_type_to_string e)
@@ -155,12 +158,16 @@ let run host port config =
   let open Async in
 
   let callback size =
-    let buf = Core.Bigstring.create size in
+    fun rd wr cl peer ->
+      Reader.read_line rd >>= function
+      | `Ok line ->
+        Writer.write_line wr line; return ()
+      | `Eof -> cl in
 
-    fun t peer -> Tls_async.read t buf 0 size >>= fun len -> Tls_async.write t buf 0 len in
+  Unix.Inet_addr.of_string_or_getbyname host >>= fun host ->
 
   let socket = Socket.create Socket.Type.tcp in
-  let socket = Socket.bind_inet ~reuseaddr:true socket (Socket.Address.Inet.create (Unix.Inet_addr.of_string host) ~port) in
+  let socket = Socket.bind_inet ~reuseaddr:true socket (Socket.Address.Inet.create host ~port) in
   let socket = Socket.listen socket in
 
   Fmt.pr "=> Socket binded.\n%!";

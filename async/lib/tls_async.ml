@@ -116,8 +116,8 @@ end
 
 type tracer = Sexplib.Sexp.t -> unit
 
-type 'address t =
-  { socket : ([ `Active ], 'address) Socket.t
+type 'addr t =
+  { socket : ([ `Active ], 'addr) Socket.t
   ; tracer : tracer option
   ; mutable state : state
   ; mutable linger : Cstruct.t option }
@@ -131,8 +131,6 @@ exception Tls_failure of Tls.Engine.failure
 exception Tls_close
 
 let with_some f = function Some x -> f x | None -> return ()
-
-type active = [ `Active of Tls.Engine.state ]
 
 (* XXX(dinosaure): from this wrapper, [`Error] can appear in any case on
    [t.state]. we short-cut control-flow by raising exception - but to be safe,
@@ -315,6 +313,26 @@ let connect config socket addr =
 let read t buffer off len = rd t (Cstruct.of_bigarray ~off ~len buffer)
 let write t buffer off len = wr t (Cstruct.of_bigarray ~off ~len buffer)
 
+let pipe t =
+  let b_reader = Cstruct.create 0x8000 in
+  let f_reader writer =
+    rd t b_reader >>= fun len ->
+    Pipe.write writer (Cstruct.to_string (Cstruct.sub b_reader 0 len)) in
+  let error exn = return () in
+  let f_writer reader =
+    Pipe.read reader >>= function
+    | `Ok s -> wr t (Cstruct.of_string s)
+    | `Eof -> close ~error t in
+  Pipe.create_reader ~close_on_exception:false f_reader,
+  Pipe.create_writer f_writer
+
+let reader_and_writer t =
+  let pr, pw = pipe t in
+  let info = Info.create "tls" t Sexplib.Conv.sexp_of_opaque in
+
+  Reader.of_pipe info pr >>= fun reader ->
+  Writer.of_pipe info pw >>= fun (writer, `Closed_and_flushed_downstream closed) -> return (reader, writer, closed)
+
 let epoch t = match t.state with
   | `Active tls ->
     (match Tls.Engine.epoch tls with
@@ -322,4 +340,5 @@ let epoch t = match t.state with
      | `Epoch data -> `Ok data)
   | `Eof | `Error _ -> `Error
 
+(* TODO: replace by an async filler. *)
 let () = ignore @@ Nocrypto_entropy_lwt.initialize ()
