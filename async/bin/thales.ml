@@ -1,6 +1,8 @@
 let invalid_arg fmt = Fmt.kstrf (fun e -> invalid_arg e) fmt
 let (<.>) f g = fun x -> f (g x)
 
+module U = Unix
+
 type cipher =
   [ `AES_128_CBC_SHA
   | `AES_128_CBC_SHA256
@@ -123,46 +125,58 @@ let to_own_cert own_cert : (Tls.Config.own_cert, [ `Msg of string ]) result Asyn
     with Jump err -> Rresult.R.error err in
 
   let open Async in match own_cert with
-  | `Multiple chain ->
-    Deferred.List.map ~f:(fun (cert, priv_key) -> X509_async.private_of_pems ~cert ~priv_key) chain
-    >>| fun chain -> Rresult.R.(list_of_result_to_result_of_list chain >>| fun chain -> `Multiple chain)
   | `Multiple_default ((default_cert, default_priv_key), chain) ->
     X509_async.private_of_pems ~cert:default_cert ~priv_key:default_priv_key >>= fun default ->
     Deferred.List.map ~f:(fun (cert, priv_key) -> X509_async.private_of_pems ~cert ~priv_key) chain
     >>| fun chain -> Rresult.R.(list_of_result_to_result_of_list chain >>= fun chain -> default >>| fun default -> `Multiple_default (default, chain))
+  | `Multiple [ cert, priv_key ]
   | `Single (cert, priv_key) ->
-    X509_async.private_of_pems ~cert ~priv_key >>| function
-    | Ok v -> Rresult.R.ok (`Single v)
-    | Error _ as err -> err
+    (X509_async.private_of_pems ~cert ~priv_key >>| function
+      | Ok v -> Rresult.R.ok (`Single v)
+      | Error _ as err -> err)
+  | `Multiple chain ->
+    Deferred.List.map ~f:(fun (cert, priv_key) -> X509_async.private_of_pems ~cert ~priv_key) chain
+    >>| fun chain -> Rresult.R.(list_of_result_to_result_of_list chain >>| fun chain -> `Multiple chain)
+
 
 let on_some f = function Some x -> Async.(f x >>| fun x -> Some x) | None -> Async.return None
+let tracer sexp = Fmt.pr "S> %a.\n%!" Sexplib.Sexp.pp sexp
 
 let handle callback t peer =
-  Async.Thread_safe.block_on_async
-    (fun () ->
-       let open Async in
-       Tls_async.reader_and_writer t >>= fun (rd, wr, cl) -> callback rd wr cl peer) |> function
-  | Ok () -> ()
-  | Error (Tls_async.Tls_alert e) ->
-    Fmt.epr "!> %s.\n%!" (Tls.Packet.alert_type_to_string e)
-  | Error (Tls_async.Tls_failure e) ->
-    Fmt.epr "!> %s.\n%!" (Tls.Engine.string_of_failure e)
-  | Error Tls_async.Tls_close ->
-    Fmt.epr "!> tls connection close.\n%!"
-  | Error (Unix.Unix_error (e, f, p)) ->
-    Fmt.epr "!> (%s, %s, %s.\n%!" (Unix.error_message e) f p
-  | Error exn ->
-    Fmt.epr "!> %s.\n%!" (Core.Exn.to_string exn)
+  let open Async in
+
+  let error exn = return () in
+
+  let process () =
+    Tls_async.reader_and_writer ~error t >>> fun (rd, wr, cl) -> callback rd wr cl peer in
+  let monitor = Monitor.create ~name:"clients" () in
+  Scheduler.within ~monitor process
+  ; Monitor.detach_and_iter_errors monitor
+    ~f:(function
+        | Tls_async.Tls_alert e ->
+          Fmt.epr "!> %s.\n%!" (Tls.Packet.alert_type_to_string e)
+        | Tls_async.Tls_failure e ->
+          Fmt.epr "!> %s.\n%!" (Tls.Engine.string_of_failure e)
+        | Tls_async.Tls_close ->
+          Fmt.epr "!> tls connection close.\n%!"
+        | Unix.Unix_error (e, f, p) ->
+          Fmt.epr "!> (%s, %s, %s).\n%!" (U.error_message e) f p
+        | exn ->
+          Fmt.epr "!> %s.\n%!" (Core.Exn.to_string exn))
 
 let run host port config =
   let open Async in
 
-  let callback size =
+  let callback =
     fun rd wr cl peer ->
-      Reader.read_line rd >>= function
-      | `Ok line ->
-        Writer.write_line wr line; return ()
-      | `Eof -> cl in
+      let rec go () =
+        Reader.read_line rd >>= function
+        | `Ok line ->
+          Writer.write_line wr line
+        ; go ()
+        | `Eof ->
+          Writer.close wr >>= fun () -> cl in
+      go () >>= fun () -> return () in
 
   Unix.Inet_addr.of_string_or_getbyname host >>= fun host ->
 
@@ -176,8 +190,9 @@ let run host port config =
     Monitor.try_with ~name:"accept"
       (fun () -> Tls_async.accept config socket) >>= function
     | Ok (t, peer) ->
-      Fmt.pr "=> Receive a connection.\n%!";
-      handle (callback 4096) t peer
+      handle
+        (fun rd wr cl peer -> callback rd wr cl peer >>> fun () -> ())
+        t peer
     ; loop socket
     | Error exn ->
       Fmt.epr "!> %s.\n%!" (Core.Exn.to_string exn)
