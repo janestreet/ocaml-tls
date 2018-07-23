@@ -63,7 +63,8 @@ module Async_cstruct = struct
     let rec finish fd buf result =
       let open Unix.Error in
       match result with
-      | `Already_closed | `Ok 0 -> return `Eof
+      | `Already_closed | `Ok 0 ->
+        return `Eof
       (* XXX(dinosaure): not sure to return [`Eof] when syscall returns [0]. *)
       | `Ok n -> return (`Ok n)
       | `Error (Unix.Unix_error ((EWOULDBLOCK | EAGAIN), _, _)) ->
@@ -105,8 +106,10 @@ module Async_cstruct = struct
     let wr cs = protect ~name:"write" ~f:(make_writer fd) socket cs in
 
     let rec wrf wr = function
-      | cs when Cstruct.len cs = 0 -> return (Rresult.R.ok ())
-      | cs -> wr cs >>= function
+      | cs when Cstruct.len cs = 0 ->
+        return (Rresult.R.ok ())
+      | cs ->
+        wr cs >>= function
         | Ok (`Ok n) -> wrf wr (Cstruct.shift cs n)
         | Ok `Closed -> return (Rresult.R.ok ())
         | Error _ as err -> return err in
@@ -125,6 +128,11 @@ and state =
   [ `Active of Tls.Engine.state
   | `Eof
   | `Error of exn ]
+
+let tracing t f =
+  match t.tracer with
+  | None -> f ()
+  | Some hook -> Tls.Tracing.active ~hook f
 
 exception Tls_alert of Tls.Packet.alert_type
 exception Tls_failure of Tls.Engine.failure
@@ -149,7 +157,7 @@ let rd, wr =
 let recv_buf = Cstruct.create 4096
 
 let rec rd_react t : [ `Ok of Cstruct.t option | `Eof ] Deferred.t =
-  let handle tls raw = match Tls.Engine.handle_tls tls raw with
+  let handle tls raw = match tracing t @@ fun () -> Tls.Engine.handle_tls tls raw with
     | `Ok (state', `Response resp, `Data data) ->
       let state' = match state' with
         | `Ok tls  -> `Active tls
@@ -165,7 +173,7 @@ let rec rd_react t : [ `Ok of Cstruct.t option | `Eof ] Deferred.t =
   | `Eof ->
     if not (Fd.is_closed (Socket.fd t.socket))
     then Socket.shutdown t.socket `Receive
-    ; return `Eof
+  ; return `Eof
   | `Active _ ->
     rd t recv_buf >>= fun r -> match t.state, r with
     | `Active _, `Eof ->
@@ -193,21 +201,25 @@ let rec rd t buf =
     let n = min (Cstruct.len buf) rlen in
     Cstruct.blit res 0 buf 0 n
   ; t.linger <- (if n < rlen then Some (Cstruct.sub res n (rlen - n)) else None)
-  ; return n in
+  ; return (`Ok n) in
 
   match t.linger with
   | Some res -> wr_out res
   | None ->
     rd_react t >>= function
-    | `Eof -> return 0
+    | `Eof -> return `Eof
+    (* XXX(dinosaure): [async] has a specific semantic where a [0] does not mean
+       a closed socket. So we need to return [`Eof] or [`Ok n] to notice at the
+       top if socket is closed or not. *)
     | `Ok None -> rd t buf
     | `Ok (Some res) -> wr_out res
 
 let wrv t css =
   match t.state with
   | `Error exn -> raise exn (* exception leaks *)
-  | `Eof -> raise Tls_close
-  | `Active tls -> match Tls.Engine.send_application_data tls css with
+  | `Eof ->
+    raise Tls_close
+  | `Active tls -> match tracing t @@ fun () -> Tls.Engine.send_application_data tls css with
     | Some (tls, data) ->
       t.state <- `Active tls
     ; wr t data
@@ -242,7 +254,7 @@ let reneg ?authenticator ?acceptable_cas ?cert ?(drop = true) t =
   | `Error exn -> raise exn
   | `Eof -> raise Tls_close
   | `Active tls ->
-    match Tls.Engine.reneg ?authenticator ?acceptable_cas ?cert tls with
+    match tracing t @@ fun () -> Tls.Engine.reneg ?authenticator ?acceptable_cas ?cert tls with
     | None -> assert false (* TODO: [tls] is not ready to renegotiate. *)
     | Some (tls', buf) ->
       if drop then t.linger <- None
@@ -254,7 +266,7 @@ let reneg ?authenticator ?acceptable_cas ?cert ?(drop = true) t =
 
 let close t = match t.state with
   | `Active tls ->
-    let (_tls, buf) = Tls.Engine.send_close_notify tls in
+    let (_, buf) = tracing t @@ fun () -> Tls.Engine.send_close_notify tls in
     t.state <- `Eof
   ; wr t buf
   | _ -> return ()
@@ -270,14 +282,14 @@ let close ~error t =
       if not (Fd.is_closed (Socket.fd t.socket))
       then Deferred.don't_wait_for (Fd.close (Socket.fd t.socket)))
 
-let server_of_socket config socket =
+let server_of_socket ?tracer config socket =
   drain_handshake
     { state = `Active (Tls.Engine.server config)
     ; socket
     ; linger = None
-    ; tracer = None }
+    ; tracer }
 
-let client_of_socket config ?host socket =
+let client_of_socket ?tracer config ?host socket =
   let config' = match host with
     | None -> config
     | Some host -> Tls.Config.peer config host in
@@ -286,24 +298,24 @@ let client_of_socket config ?host socket =
     { state = `Active tls
     ; socket
     ; linger = None
-    ; tracer = None } in
+    ; tracer } in
   wr t init >>= fun () -> drain_handshake t
 
-let accept config socket =
+let accept ?tracer config socket =
   Socket.accept socket >>= function
   | `Socket_closed -> assert false
   | `Ok (socket', addr) ->
     Monitor.try_with ~name:"handshake"
-      (fun () -> server_of_socket config socket' >>| fun t -> (t, addr))
+      (fun () -> server_of_socket ?tracer config socket' >>| fun t -> (t, addr))
     >>= function
     | Ok v -> return v
     | Error exn ->
       Socket.shutdown socket' `Both
     ; raise exn
 
-let connect config socket addr =
+let connect ?tracer config socket addr =
   Monitor.try_with ~name:"connect"
-    (fun () -> Socket.connect socket addr >>= fun socket' -> client_of_socket config socket') (* TODO: handle host. *)
+    (fun () -> Socket.connect socket addr >>= fun socket' -> client_of_socket ?tracer config socket') (* TODO: handle host. *)
   >>= function
   | Ok v -> return v
   | Error exn ->
@@ -313,21 +325,26 @@ let connect config socket addr =
 let read t buffer off len = rd t (Cstruct.of_bigarray ~off ~len buffer)
 let write t buffer off len = wr t (Cstruct.of_bigarray ~off ~len buffer)
 
-let pipe t =
+let pipe ~error t =
   let b_reader = Cstruct.create 0x8000 in
-  let f_reader writer =
-    rd t b_reader >>= fun len ->
-    Pipe.write writer (Cstruct.to_string (Cstruct.sub b_reader 0 len)) in
-  let error exn = return () in
-  let f_writer reader =
+  let rec f_reader writer =
+    rd t b_reader >>= function
+      | `Ok len ->
+        Pipe.write writer (Cstruct.to_string (Cstruct.sub b_reader 0 len)) >>= fun () -> f_reader writer
+      | `Eof ->
+        (* XXX(dinosaure): if we don't do that, we have an infinite loop. *)
+        Pipe.close writer
+      ; return () in
+  let rec f_writer reader =
     Pipe.read reader >>= function
-    | `Ok s -> wr t (Cstruct.of_string s)
-    | `Eof -> close ~error t in
+    | `Ok s ->
+      wr t (Cstruct.of_string s) >>= fun () -> f_writer reader
+    | `Eof -> close ~error t in (* XXX(dinosaure): may be we need to close [reader]. *)
   Pipe.create_reader ~close_on_exception:false f_reader,
   Pipe.create_writer f_writer
 
-let reader_and_writer t =
-  let pr, pw = pipe t in
+let reader_and_writer ~error t =
+  let pr, pw = pipe ~error t in
   let info = Info.create "tls" t Sexplib.Conv.sexp_of_opaque in
 
   Reader.of_pipe info pr >>= fun reader ->
