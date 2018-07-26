@@ -358,4 +358,4 @@ let epoch t = match t.state with
   | `Eof | `Error _ -> `Error
 
 (* TODO: replace by an async filler. *)
-let () = ignore @@ Nocrypto_entropy_lwt.initialize ()
+let () = ignore @@ Nocrypto_entropy_async.initialize ()
