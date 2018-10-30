@@ -13,7 +13,7 @@ val private_of_pems :
   -> priv_key:Fpath.t
   -> (priv, [`Msg of string]) result Deferred.t
 (** [private_of_pems ~cert ~priv_key] is [priv], after reading the private key
-   and certificate chain fro mthe given PEM-encoded files. *)
+   and certificate chain from the given PEM-encoded files. *)
 
 val certs_of_pem : Fpath.t -> (X509.t list, [`Msg of string]) result Deferred.t
 (** [certs_of_pem file] is [certificates], which are read from the PEM-encoded

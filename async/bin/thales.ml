@@ -167,7 +167,7 @@ let tracer sexp = Fmt.pr "S> %a.\n%!" Sexplib.Sexp.pp sexp
 
 let handle callback t peer =
   let open Async in
-  let error exn = return () in
+  let error _exn = return () in
   let process () =
     Tls_async.reader_and_writer ~error t
     >>> fun (rd, wr, cl) -> callback rd wr cl peer
@@ -186,7 +186,7 @@ let handle callback t peer =
 
 let run host port config =
   let open Async in
-  let callback rd wr cl peer =
+  let callback rd wr cl _peer =
     let rec go () =
       Reader.read_line rd
       >>= function

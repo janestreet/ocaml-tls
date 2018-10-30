@@ -1,9 +1,9 @@
 (library
  ((name tls_async)
   (modules (tls_async))
-  (libraries (nocrypto.async core async rresult tls))))
+  (libraries (nocrypto.async core async tls))))
 
 (library
  ((name x509_async)
   (modules (x509_async))
-  (libraries (ptime.clock.os core async fpath rresult fmt nocrypto x509))))
+  (libraries (ptime.clock core async fpath fmt nocrypto x509))))

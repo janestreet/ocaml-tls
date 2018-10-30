@@ -2,12 +2,16 @@ module U = Unix
 open Core
 open Async
 
+let error_msgf fmt = Format.ksprintf (fun s -> Error (`Msg s)) fmt
+
+[@@@warning "-32"]
+
 (* This really belongs just about anywhere else: generic unix name resolution. *)
 let resolve host service =
   let tcp = U.getprotobyname "tcp" in
   match U.getaddrinfo host service [U.AI_PROTOCOL tcp.p_proto] with
-  | [] -> return (Rresult.R.error_msgf "No address for %s:%s" host service)
-  | ai :: _ -> return (Rresult.R.ok ai.ai_addr)
+  | [] -> return (error_msgf "No address for %s:%s" host service)
+  | ai :: _ -> return (Ok ai.ai_addr)
 
 let gettimeofday = Unix.gettimeofday
 
@@ -24,13 +28,12 @@ module Async_cstruct = struct
         >>= fun res ->
         match Socket.getopt socket Socket.Opt.error with
         (* XXX(dinosaure): see [sockopt.c], return 0 if nothing. *)
-        | 0 -> return (Rresult.R.ok res)
+        | 0 -> return (Ok res)
         | errno ->
             return
-              (Rresult.R.error
-                 (U.Unix_error (Unix.Error.of_system_int ~errno, name, ""))) )
-    >>= function
-    | Ok res -> return res | Error exn -> return (Rresult.R.error exn)
+              (Error (U.Unix_error (Unix.Error.of_system_int ~errno, name, "")))
+    )
+    >>= function Ok res -> return res | Error exn -> return (Error exn)
 
   let bad_fd () = assert false
 
@@ -118,12 +121,12 @@ module Async_cstruct = struct
     let fd = Socket.fd socket in
     let wr cs = protect ~name:"write" ~f:(make_writer fd) socket cs in
     let rec wrf wr = function
-      | cs when Cstruct.len cs = 0 -> return (Rresult.R.ok ())
+      | cs when Cstruct.len cs = 0 -> return (Ok ())
       | cs -> (
           wr cs
           >>= function
           | Ok (`Ok n) -> wrf wr (Cstruct.shift cs n)
-          | Ok `Closed -> return (Rresult.R.ok ())
+          | Ok `Closed -> return (Ok ())
           | Error _ as err -> return err )
     in
     wrf wr
