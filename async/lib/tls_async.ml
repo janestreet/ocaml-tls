@@ -124,6 +124,7 @@ type tracer = Sexplib.Sexp.t -> unit
 type 'addr t =
   { socket: ([`Active], 'addr) Socket.t
   ; tracer: tracer option
+  ; recv_buf: Cstruct.t
   ; mutable state: state
   ; mutable linger: Cstruct.t option }
 
@@ -157,8 +158,6 @@ let rd, wr =
   ( recording_errors Async_cstruct.reader_from_socket
   , recording_errors Async_cstruct.writer_from_socket )
 
-let recv_buf = Cstruct.create 4096
-
 let rec rd_react t : [`Ok of Cstruct.t option | `Eof] Deferred.t =
   let handle tls raw =
     match tracing t @@ fun () -> Tls.Engine.handle_tls tls raw with
@@ -182,13 +181,13 @@ let rec rd_react t : [`Ok of Cstruct.t option | `Eof] Deferred.t =
         Socket.shutdown t.socket `Receive ;
       return `Eof
   | `Active _ -> (
-      rd t recv_buf
+      rd t t.recv_buf
       >>= fun r ->
       match (t.state, r) with
       | `Active _, `Eof ->
           t.state <- `Eof ;
           return `Eof
-      | `Active tls, `Ok n -> handle tls (Cstruct.sub recv_buf 0 n)
+      | `Active tls, `Ok n -> handle tls (Cstruct.sub t.recv_buf 0 n)
       | `Error exn, _ ->
           (* XXX(dinosaure): see [rd], when [Async_cstruct.reader_from_socket]
          returns [Error], we set [t.state] to be [`Error] (then, we get this
@@ -299,14 +298,14 @@ let close ~error t =
 
 let server_of_socket ?tracer config socket =
   drain_handshake
-    {state= `Active (Tls.Engine.server config); socket; linger= None; tracer}
+    {state= `Active (Tls.Engine.server config); socket; recv_buf= Cstruct.create 4096; linger= None; tracer}
 
 let client_of_socket ?tracer config ?host socket =
   let config' =
     match host with None -> config | Some host -> Tls.Config.peer config host
   in
   let tls, init = Tls.Engine.client config' in
-  let t = {state= `Active tls; socket; linger= None; tracer} in
+  let t = {state= `Active tls; socket; recv_buf= Cstruct.create 4096; linger= None; tracer} in
   wr t init >>= fun () -> drain_handshake t
 
 let accept ?tracer config socket =
