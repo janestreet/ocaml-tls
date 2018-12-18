@@ -16,9 +16,7 @@ let load_file path =
   >>| function
   | Ok v -> Ok v
   | Error exn ->
-      (* TODO: replace by [Or_error]. *)
-      error_msgf "Got an error when we load %a: %s" Fpath.pp path
-        (Exn.to_string exn)
+    Or_error.error (Fmt.strf "Failed to load file %a" Fpath.pp path) exn Exn.sexp_of_t
 
 let private_of_pems ~cert ~priv_key =
   let open X509.Encoding.Pem in
@@ -27,14 +25,12 @@ let private_of_pems ~cert ~priv_key =
   >>= fun certs ->
   load_file priv_key
   >>| Result.map ~f:Private_key.of_pem_cstruct1
-  >>= fun pk ->
+  >>| fun pk ->
   match (certs, pk) with
-  | Ok certs, Ok (`RSA pk) -> return (Ok (certs, pk))
-  | (Error _ as err), Ok _ -> return err
-  | Ok _, (Error _ as err) -> return err
-  | Error (`Msg _err0), Error (`Msg _err1) ->
-      (* TODO: combine errors. *)
-      assert false
+  | Ok certs, Ok (`RSA pk) -> (Ok (certs, pk))
+  | (Error _ as err), Ok _ -> err
+  | Ok _, (Error _ as err) -> err
+  | Error err0, Error err1 -> Or_error.both (Error err0) (Error err1)
 
 let certs_of_pem path =
   load_file path >>| Result.map ~f:X509.Encoding.Pem.Certificate.of_pem_cstruct
@@ -46,9 +42,9 @@ let certs_of_pem_dir ?(ext = "crt") path =
           certs_of_pem path
           >>| function
           | Ok certs -> certs
-          | Error (`Msg err) ->
-              Fmt.epr "Silently got an error when we tried to load %a: %s"
-                Fpath.pp path err ;
+          | Error err ->
+              Fmt.epr "Silently got an error when we tried to load %a: %a"
+                Fpath.pp path Error.pp err ;
               [] )
 
 let authenticator meth =

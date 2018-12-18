@@ -1,3 +1,4 @@
+open Core
 open Async
 
 (** X.509 certificate handling using Async. *)
@@ -11,11 +12,11 @@ type authenticator = X509.Authenticator.a
 val private_of_pems :
      cert:Fpath.t
   -> priv_key:Fpath.t
-  -> (priv, [`Msg of string]) result Deferred.t
+  -> priv Or_error.t Deferred.t
 (** [private_of_pems ~cert ~priv_key] is [priv], after reading the private key
    and certificate chain from the given PEM-encoded files. *)
 
-val certs_of_pem : Fpath.t -> (X509.t list, [`Msg of string]) result Deferred.t
+val certs_of_pem : Fpath.t -> X509.t list Or_error.t Deferred.t
 (** [certs_of_pem file] is [certificates], which are read from the PEM-encoded
    [file]. *)
 
@@ -29,6 +30,6 @@ val authenticator :
      | `Key_fingerprints of Nocrypto.Hash.hash * (string * Cstruct.t) list
      | `Hex_key_fingerprints of Nocrypto.Hash.hash * (string * string) list
      | `No_authentication ]
-  -> (authenticator, [`Msg of string]) result Deferred.t
+  -> authenticator Or_error.t Deferred.t
 (** [authenticator methods] constructs an [authenticator] using the specified
    method and data. *)
