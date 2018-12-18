@@ -1,5 +1,3 @@
-let error_msgf fmt = Format.kasprintf (fun s -> Error (`Msg s)) fmt
-
 let ( <.> ) f g x = f (g x)
 
 open Core
