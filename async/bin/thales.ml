@@ -125,15 +125,14 @@ type own_cert =
   | `Multiple_default of (Fpath.t * Fpath.t) * (Fpath.t * Fpath.t) list
   | `Single of Fpath.t * Fpath.t ]
 
-exception Jump of [`Msg of string]
+exception Jump of Core.Error.t
 
 let to_own_cert own_cert :
-    (Tls.Config.own_cert, [`Msg of string]) result Async.Deferred.t =
+    Tls.Config.own_cert Core.Or_error.t Async.Deferred.t =
   let list_of_result_to_result_of_list lst =
     try
-      Rresult.R.ok
-        (List.map (function Error err -> raise (Jump err) | Ok v -> v) lst)
-    with Jump err -> Rresult.R.error err
+      Ok (List.map (function Error err -> raise (Jump err) | Ok v -> v) lst)
+    with Jump err -> Error err
   in
   let open Async in
   match own_cert with
@@ -144,19 +143,19 @@ let to_own_cert own_cert :
         ~f:(fun (cert, priv_key) -> X509_async.private_of_pems ~cert ~priv_key)
         chain
       >>| fun chain ->
-      Rresult.R.(
+      Core.Or_error.(
         list_of_result_to_result_of_list chain
         >>= fun chain ->
         default >>| fun default -> `Multiple_default (default, chain))
   | `Multiple [(cert, priv_key)] | `Single (cert, priv_key) -> (
       X509_async.private_of_pems ~cert ~priv_key
-      >>| function Ok v -> Rresult.R.ok (`Single v) | Error _ as err -> err )
+      >>| function Ok v -> Ok (`Single v) | Error _ as err -> err )
   | `Multiple chain ->
       Deferred.List.map
         ~f:(fun (cert, priv_key) -> X509_async.private_of_pems ~cert ~priv_key)
         chain
       >>| fun chain ->
-      Rresult.R.(
+      Core.Or_error.(
         list_of_result_to_result_of_list chain >>| fun chain -> `Multiple chain)
 
 let on_some f = function
@@ -225,7 +224,7 @@ let main host port reneg certificates authenticator ciphers hashes =
   on_some to_own_cert certificates
   >>= fun certificates ->
   match (authenticator, certificates) with
-  | Error (`Msg err), _ | _, Some (Error (`Msg err)) ->
+  | Error err, _ | _, Some (Error err) ->
       return (`Error (false, err))
   | Ok authenticator, Some (Ok certificates) ->
       let config =
@@ -246,7 +245,7 @@ let check host port reneg certificates ca_file ca_path ciphers hashes =
     | None, Some ca_path -> `Ca_dir ca_path
     | None, None -> `No_authentication
     | Some _, Some _ ->
-        `Error (true, "Impossible to load both CA file and CA directory.")
+        `Error (true, Core.Error.of_string "Impossible to load both CA file and CA directory.")
   in
   match authenticator with
   | `Error _ as err -> err
@@ -259,8 +258,7 @@ let check host port reneg certificates ca_file ca_path ciphers hashes =
     | Error exn ->
         `Error
           ( false
-          , Fmt.strf "Got an exception during executation: %s"
-              (Core.Exn.to_string exn) ) )
+          , Core.Error.of_exn ~backtrace:(`This "Got an exception during executation") exn) )
 
 open Cmdliner
 
@@ -420,13 +418,18 @@ let port =
   let doc = "Port." in
   Arg.(value & opt int 43 & info ["p"; "port"] ~doc)
 
+let ret_with_core_error = function
+  | `Ok _ as v -> v
+  | `Help _ as v -> v
+  | `Error (r, exn) -> `Error (r, Core.Error.to_string_hum exn)
+
 let cmd =
   let doc = "Example to use ocaml-tls with async." in
   let exits = Term.default_exits in
   ( Term.(
       ret
-        ( const check $ host $ port $ reneg $ own_cert $ ca_file $ ca_path
-        $ ciphers $ hashes ))
+        (app (pure ret_with_core_error)
+           (const check $ host $ port $ reneg $ own_cert $ ca_file $ ca_path $ ciphers $ hashes)))
   , Term.info "thales" ~doc ~exits )
 
 let () = Term.(exit @@ eval cmd)
