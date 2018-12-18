@@ -221,6 +221,8 @@ let rec rd t buf =
       | `Ok None -> rd t buf
       | `Ok (Some res) -> wr_out res )
 
+exception Tls_state_not_ready_to_send
+
 let wrv t css =
   match t.state with
   | `Error exn -> raise exn (* exception leaks *)
@@ -230,9 +232,7 @@ let wrv t css =
     | Some (tls, data) ->
         t.state <- `Active tls ;
         wr t data
-    | None -> assert false )
-
-(* TODO: [tls] is not ready to send data. *)
+    | None -> raise Tls_state_not_ready_to_send )
 
 let wr t cs = wrv t [cs]
 
@@ -259,6 +259,8 @@ let rec drain_handshake t =
         | `Eof -> raise End_of_file
         | `Ok cs -> to_linger t cs ; drain_handshake t )
 
+exception Tls_can't_renegociate
+
 let reneg ?authenticator ?acceptable_cas ?cert ?(drop = true) t =
   match t.state with
   | `Error exn -> raise exn
@@ -268,7 +270,7 @@ let reneg ?authenticator ?acceptable_cas ?cert ?(drop = true) t =
       tracing t
       @@ fun () -> Tls.Engine.reneg ?authenticator ?acceptable_cas ?cert tls
     with
-    | None -> assert false (* TODO: [tls] is not ready to renegotiate. *)
+    | None -> raise Tls_can't_renegociate
     | Some (tls', buf) ->
         if drop then t.linger <- None ;
         t.state <- `Active tls' ;
@@ -308,10 +310,12 @@ let client_of_socket ?tracer config ?host socket =
   let t = {state= `Active tls; socket; recv_buf= Cstruct.create 4096; linger= None; tracer} in
   wr t init >>= fun () -> drain_handshake t
 
+exception Tls_socket_closed
+
 let accept ?tracer config socket =
   Socket.accept socket
   >>= function
-  | `Socket_closed -> assert false
+  | `Socket_closed -> raise Tls_socket_closed
   | `Ok (socket', addr) -> (
       Monitor.try_with ~name:"handshake" (fun () ->
           server_of_socket ?tracer config socket' >>| fun t -> (t, addr) )

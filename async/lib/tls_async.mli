@@ -9,10 +9,23 @@ exception Bad_fd
    [EBADF] Unix-exception. *)
 
 exception Tls_alert of Tls.Packet.alert_type
+(** Raised by the TLS reader when it handles input. *)
 
 exception Tls_failure of Tls.Engine.failure
+(** Raised by the TLS reader when it handles input. *)
 
 exception Tls_close
+(** Raise by the TLS state when it retrieves end-of-input state but user want to
+   write something or renegociate. *)
+
+exception Tls_state_not_ready_to_send
+(** Raised by the TLS state when it not able to send something. *)
+
+exception Tls_can't_renegociate
+(** Raised by the TLS state when it not able to renegociate. *)
+
+exception Tls_socket_closed
+(** Raised by [accept] when socket is closed. *)
 
 val server_of_socket :
      ?tracer:tracer
