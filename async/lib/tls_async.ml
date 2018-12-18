@@ -2,19 +2,6 @@ module U = Unix
 open Core
 open Async
 
-let error_msgf fmt = Format.ksprintf (fun s -> Error (`Msg s)) fmt
-
-[@@@warning "-32"]
-
-(* This really belongs just about anywhere else: generic unix name resolution. *)
-let resolve host service =
-  let tcp = U.getprotobyname "tcp" in
-  match U.getaddrinfo host service [U.AI_PROTOCOL tcp.p_proto] with
-  | [] -> return (error_msgf "No address for %s:%s" host service)
-  | ai :: _ -> return (Ok ai.ai_addr)
-
-let gettimeofday = Unix.gettimeofday
-
 module Async_cstruct = struct
   (* XXX(dinosaure): this module generate from a socket:
      - a safe reader and a safe writer without exception leaks
