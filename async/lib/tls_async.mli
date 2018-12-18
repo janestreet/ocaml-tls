@@ -4,6 +4,10 @@ type 'addr t constraint 'addr = [< Socket.Address.t]
 
 type tracer = Sexplib.Sexp.t -> unit
 
+exception Bad_fd
+(** Raised by internal reader/writer when [read] or [write] {i syscall} raises
+   [EBADF] Unix-exception. *)
+
 exception Tls_alert of Tls.Packet.alert_type
 
 exception Tls_failure of Tls.Engine.failure

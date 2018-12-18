@@ -2,6 +2,8 @@ module U = Unix
 open Core
 open Async
 
+exception Bad_fd
+
 module Async_cstruct = struct
   (* XXX(dinosaure): this module generate from a socket:
      - a safe reader and a safe writer without exception leaks
@@ -22,9 +24,7 @@ module Async_cstruct = struct
     )
     >>= function Ok res -> return res | Error exn -> return (Error exn)
 
-  let bad_fd () = assert false
-
-  (* TODO *)
+  let bad_fd () = raise Bad_fd
 
   type 'kind buffer = Cstruct.t constraint 'kind = [< `Read | `Write]
 
