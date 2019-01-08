@@ -259,7 +259,7 @@ let rec drain_handshake t =
         | `Eof -> raise End_of_file
         | `Ok cs -> to_linger t cs ; drain_handshake t )
 
-exception Tls_can't_renegociate
+exception Tls_can't_renegotiate
 
 let reneg ?authenticator ?acceptable_cas ?cert ?(drop = true) t =
   match t.state with
@@ -270,7 +270,7 @@ let reneg ?authenticator ?acceptable_cas ?cert ?(drop = true) t =
       tracing t
       @@ fun () -> Tls.Engine.reneg ?authenticator ?acceptable_cas ?cert tls
     with
-    | None -> raise Tls_can't_renegociate
+    | None -> raise Tls_can't_renegotiate
     | Some (tls', buf) ->
         if drop then t.linger <- None ;
         t.state <- `Active tls' ;
