@@ -21,7 +21,7 @@ exception Tls_close
 exception Tls_state_not_ready_to_send
 (** Raised by the TLS state when it not able to send something. *)
 
-exception Tls_can't_renegociate
+exception Tls_can't_renegotiate
 (** Raised by the TLS state when it not able to renegociate. *)
 
 exception Tls_socket_closed
