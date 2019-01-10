@@ -24,11 +24,9 @@ module Async_cstruct = struct
     )
     >>= function Ok res -> return res | Error exn -> return (Error exn)
 
-  let bad_fd () = raise Bad_fd
-
   type 'kind buffer = Cstruct.t constraint 'kind = [< `Read | `Write]
 
-  let make_writer fd : [`Write] buffer -> [`Ok of int | `Closed] Deferred.t =
+  let make_writer fd : [`Write] buffer -> [`Ok of int | `Closed | `Bad_fd | `Exn of exn] Deferred.t =
     (* XXX(dinosaure): this code is a part of [faraday] project and benefits on
        a non-blocking writer when it's possible. *)
     let finish result =
@@ -39,11 +37,11 @@ module Async_cstruct = struct
       | `Error (Unix.Unix_error ((EWOULDBLOCK | EAGAIN), _, _)) -> (
           Fd.ready_to fd `Write
           >>| function
-          | `Bad_fd -> bad_fd () | `Closed -> `Closed | `Ready -> `Ok 0 )
-      | `Error (Unix.Unix_error (EBADF, _, _)) -> bad_fd ()
+          | `Bad_fd -> `Bad_fd | `Closed -> `Closed | `Ready -> `Ok 0 )
+      | `Error (Unix.Unix_error (EBADF, _, _)) -> return `Bad_fd
       | `Error exn ->
           Deferred.don't_wait_for (Fd.close fd) ;
-          raise exn
+          return (`Exn exn)
     in
     (* XXX(dinosaure): exception leak. *)
     fun {Cstruct.buffer= buf; off= pos; len} ->
@@ -56,7 +54,7 @@ module Async_cstruct = struct
             Bigstring.write ~pos ~len fd buf )
         >>= finish
 
-  let make_reader fd : [`Read] buffer -> [`Ok of int | `Eof] Deferred.t =
+  let make_reader fd : [`Read] buffer -> [`Ok of int | `Eof | `Bad_fd | `Exn of exn] Deferred.t =
     let cstruct_to_bigstring {Cstruct.buffer= buf; off= pos; len} f =
       f buf ~pos ~len
     in
@@ -69,12 +67,12 @@ module Async_cstruct = struct
       | `Error (Unix.Unix_error ((EWOULDBLOCK | EAGAIN), _, _)) -> (
           Fd.ready_to fd `Read
           >>= function
-          | `Bad_fd -> bad_fd () | `Closed -> return `Eof | `Ready -> go fd buf
+          | `Bad_fd -> return `Bad_fd | `Closed -> return `Eof | `Ready -> go fd buf
           (* XXX(dinosaure): ready to read again. *) )
-      | `Error (Unix.Unix_error (EBADF, _, _)) -> bad_fd ()
+      | `Error (Unix.Unix_error (EBADF, _, _)) -> return `Bad_fd
       | `Error exn ->
           Deferred.don't_wait_for (Fd.close fd) ;
-          raise exn
+          return (`Exn exn)
     (* XXX(dinosaure): exception leak. *)
     and go fd buf =
       if Fd.supports_nonblock fd then
@@ -97,12 +95,17 @@ module Async_cstruct = struct
   type writer = [`Write] buffer -> (unit, exn) result Deferred.t
 
   type reader = [`Read] buffer -> ([`Ok of int | `Eof], exn) result Deferred.t
+  type reader_return = [ `Ok of int | `Eof ]
 
   (* XXX(dinosaure): at this stage, no exception leaks are possible. *)
 
   let reader_from_socket socket : reader =
     let fd = Socket.fd socket in
-    protect ~name:"read" ~f:(make_reader fd) socket
+    (fun buffer -> (protect ~name:"read" ~f:(make_reader fd) socket buffer) >>| function
+       | Ok #reader_return as v -> v
+       | Ok `Bad_fd -> Error Bad_fd
+       | Ok (`Exn exn) -> Error exn
+       | Error _ as err -> err)
 
   let writer_from_socket socket : writer =
     let fd = Socket.fd socket in
@@ -112,6 +115,8 @@ module Async_cstruct = struct
       | cs -> (
           wr cs
           >>= function
+          | Ok `Bad_fd -> return (Error Bad_fd)
+          | Ok (`Exn exn) -> return (Error exn)
           | Ok (`Ok n) -> wrf wr (Cstruct.shift cs n)
           | Ok `Closed -> return (Ok ())
           | Error _ as err -> return err )
