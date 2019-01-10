@@ -151,17 +151,20 @@ let with_some f = function Some x -> f x | None -> return ()
    after [rd] or [wr], an [`Error] should raise exception too. *)
 
 let rd, wr =
-  let recording_errors safe_computation t cs =
+  let recording_errors ~error safe_computation t cs =
     safe_computation t.socket cs
     >>= function
     | Ok res -> return res
     | Error exn ->
         t.state <- `Error exn ;
-        raise exn
+        return error
+        (* we save the error in the state and see what happen next. We return a /safe/ value,
+           however, any next computation should see [t.state] before to do anything. *)
+        (* raise exn *)
   in
   (* exception leaks *)
-  ( recording_errors Async_cstruct.reader_from_socket
-  , recording_errors Async_cstruct.writer_from_socket )
+  ( recording_errors ~error:(`Ok 0) Async_cstruct.reader_from_socket
+  , recording_errors ~error:() Async_cstruct.writer_from_socket )
 
 let rec rd_react t : [`Ok of Cstruct.t option | `Eof] Deferred.t =
   let handle tls raw =
@@ -180,7 +183,7 @@ let rec rd_react t : [`Ok of Cstruct.t option | `Eof] Deferred.t =
         wr t resp >>= fun () -> rd_react t
   in
   match t.state with
-  | `Error exn -> raise exn (* exception leaks *)
+  | `Error _ -> return (`Ok None) (* do nothing, but still continue loop *)
   | `Eof ->
       if not (Fd.is_closed (Socket.fd t.socket)) then
         Socket.shutdown t.socket `Receive ;
@@ -197,7 +200,7 @@ let rec rd_react t : [`Ok of Cstruct.t option | `Eof] Deferred.t =
           (* XXX(dinosaure): see [rd], when [Async_cstruct.reader_from_socket]
          returns [Error], we set [t.state] to be [`Error] (then, we get this
          case) AND we raise exception. *)
-          raise exn
+          return (`Ok None)
       | `Eof, _ ->
           (* XXX(dinosaure): [`Eof] on [t.state] is a non-sense, [rd] can set
          [t.state] only on [`Error]. So, if [t.state = `Eof], we already
@@ -230,14 +233,17 @@ exception Tls_state_not_ready_to_send
 
 let wrv t css =
   match t.state with
-  | `Error exn -> raise exn (* exception leaks *)
-  | `Eof -> raise Tls_close
+  | `Error _ -> return () (* exception leaks *)
+  | `Eof ->
+    t.state <- `Error Tls_close ; return ()
   | `Active tls -> (
     match tracing t @@ fun () -> Tls.Engine.send_application_data tls css with
     | Some (tls, data) ->
         t.state <- `Active tls ;
         wr t data
-    | None -> raise Tls_state_not_ready_to_send )
+    | None ->
+      t.state <- `Error Tls_state_not_ready_to_send ;
+      return () )
 
 let wr t cs = wrv t [cs]
 
@@ -253,29 +259,33 @@ let rec drain_handshake t =
     | Some cs, Some linger -> t.linger <- Some (Cstruct.append linger cs)
   in
   match t.state with
-  | `Error exn ->
-      raise exn (* XXX(dinosaure): in any case, we should raise an error. *)
+  | `Error _ -> return t
   | `Eof -> return t
   | `Active tls -> (
       if not (Tls.Engine.handshake_in_progress tls) then return t
       else
         rd_react t
         >>= function
-        | `Eof -> raise End_of_file
+        | `Eof ->
+          t.state <- `Error Tls_close ;
+          return t
         | `Ok cs -> to_linger t cs ; drain_handshake t )
 
 exception Tls_can't_renegotiate
 
 let reneg ?authenticator ?acceptable_cas ?cert ?(drop = true) t =
   match t.state with
-  | `Error exn -> raise exn
-  | `Eof -> raise Tls_close
+  | `Error _ -> return ()
+  | `Eof ->
+    t.state <- `Error Tls_close ; return ()
   | `Active tls -> (
     match
       tracing t
       @@ fun () -> Tls.Engine.reneg ?authenticator ?acceptable_cas ?cert tls
     with
-    | None -> raise Tls_can't_renegotiate
+    | None ->
+      t.state <- `Error Tls_can't_renegotiate ;
+      return ()
     | Some (tls', buf) ->
         if drop then t.linger <- None ;
         t.state <- `Active tls' ;
