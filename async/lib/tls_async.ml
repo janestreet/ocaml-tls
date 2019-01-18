@@ -340,15 +340,15 @@ exception Tls_socket_closed
 let accept ?tracer config socket =
   Socket.accept socket
   >>= function
-  | `Socket_closed -> raise Tls_socket_closed
+  | `Socket_closed -> return (Or_error.of_exn Tls_socket_closed)
   | `Ok (socket', addr) -> (
       Monitor.try_with ~name:"handshake" (fun () ->
           server_of_socket ?tracer config socket' >>| fun t -> (t, addr) )
       >>= function
-      | Ok v -> return v
-      | Error exn ->
+      | Ok _ as ok -> return ok
+      | Error _ as err ->
           Socket.shutdown socket' `Both ;
-          raise exn )
+          return (Or_error.of_exn_result err) )
 
 let connect ?tracer config socket addr =
   Monitor.try_with ~name:"connect" (fun () ->
@@ -356,10 +356,10 @@ let connect ?tracer config socket addr =
       >>= fun socket' -> client_of_socket ?tracer config socket' )
   (* TODO: handle host. *)
   >>= function
-  | Ok v -> return v
-  | Error exn ->
+  | Ok _ as ok -> return ok
+  | Error _ as err ->
       Socket.shutdown socket `Both ;
-      raise exn
+      return (Or_error.of_exn_result err)
 
 let read t buffer off len = rd t (Cstruct.of_bigarray ~off ~len buffer)
 

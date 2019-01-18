@@ -1,4 +1,5 @@
 open Async
+open Core
 
 type 'addr t constraint 'addr = [< Socket.Address.t]
 
@@ -46,19 +47,19 @@ val accept :
      ?tracer:tracer
   -> Tls.Config.server
   -> ([`Passive], ([< Socket.Address.t] as 'a)) Socket.t
-  -> ('a t * 'a) Deferred.t
+  -> ('a t * 'a) Or_error.t Deferred.t
 
 val connect :
      ?tracer:tracer
   -> Tls.Config.client
   -> ([< `Bound | `Unconnected], ([< Socket.Address.t] as 'a)) Socket.t
   -> 'a
-  -> 'a t Deferred.t
+  -> 'a t Or_error.t Deferred.t
 
 val read :
-  'a t -> Core.Bigstring.t -> int -> int -> [`Eof | `Ok of int] Deferred.t
+  'a t -> Bigstring.t -> int -> int -> [`Eof | `Ok of int] Deferred.t
 
-val write : 'a t -> Core.Bigstring.t -> int -> int -> unit Deferred.t
+val write : 'a t -> Bigstring.t -> int -> int -> unit Deferred.t
 
 val close : error:(exn -> unit Deferred.t) -> 'a t -> unit Deferred.t
 
