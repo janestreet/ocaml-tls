@@ -5,6 +5,7 @@ _build/
 
 main.ml
 .mirage.config
+.merlin
 mirage-unikernel*opam
 mirage/*/myocamlbuild.ml
 mirage/*/*ukvm

@@ -1,0 +1,3 @@
+(executable
+ ((name thales)
+  (libraries (cmdliner rresult tls_async x509_async))))
