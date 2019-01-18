@@ -166,7 +166,7 @@ let tracer sexp = Fmt.pr "S> %a.\n%!" Sexplib.Sexp.pp sexp
 
 let handle callback t peer =
   let open Async in
-  let error _exn = return () in
+  let error exn = Fmt.pr "> return an error: %s." (Printexc.to_string exn); return () in
   let process () =
     Tls_async.reader_and_writer ~error t
     >>> fun (rd, wr, cl) -> callback rd wr cl peer
@@ -189,8 +189,8 @@ let run host port config =
     let rec go () =
       Reader.read_line rd
       >>= function
-      | `Ok line -> Writer.write_line wr line ; go ()
-      | `Eof -> Writer.close wr >>= fun () -> cl
+      | `Ok line -> Fmt.pr "> %s.\n%!" line; Writer.write_line wr line ; go ()
+      | `Eof -> Fmt.pr "> connection closed.\n%!"; Writer.close wr >>= fun () -> cl
     in
     go () >>= fun () -> return ()
   in
@@ -204,15 +204,15 @@ let run host port config =
   let socket = Socket.listen socket in
   Fmt.pr "=> Socket binded.\n%!" ;
   let rec loop socket =
-    Monitor.try_with ~name:"accept" (fun () -> Tls_async.accept config socket)
+    Tls_async.accept config socket
     >>= function
     | Ok (t, peer) ->
         handle
           (fun rd wr cl peer -> callback rd wr cl peer >>> fun () -> ())
           t peer ;
         loop socket
-    | Error exn ->
-        Fmt.epr "!> %s.\n%!" (Core.Exn.to_string exn) ;
+    | Error err ->
+        Fmt.epr "!> %a.\n%!" Core.Error.pp err ;
         loop socket
   in
   loop socket >>= fun () -> return (`Ok ())
