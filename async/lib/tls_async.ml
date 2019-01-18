@@ -177,6 +177,16 @@ let rec rd_react t : [`Ok of Cstruct.t option | `Eof] Deferred.t =
           | `Alert e -> `Error (Tls_alert e)
         in
         t.state <- state' ;
+        (* XXX(dinosaure): at this stage, client would like to close. [tls], in
+           this situation will send a CLOSE_NOTIFY but the client can already
+           closed the connection.
+
+           In this situation, try to write something will fail. [async] checks
+           if a [fd] is closed (see [Fd.syscall]). If we follow the execution
+           path, we should return an [Ok ()] instead to retrieve an exception.
+
+           This comment is a response to mirleft#388 where [lwt] implementation
+           needs to deal with this kind of leak. *)
         with_some (wr t) resp >>= fun () -> return (`Ok data)
     | `Fail (alert, `Response resp) ->
         t.state <- `Error (Tls_failure alert) ;
@@ -196,7 +206,7 @@ let rec rd_react t : [`Ok of Cstruct.t option | `Eof] Deferred.t =
           t.state <- `Eof ;
           return `Eof
       | `Active tls, `Ok n -> handle tls (Cstruct.sub t.recv_buf 0 n)
-      | `Error exn, _ ->
+      | `Error _, _ ->
           (* XXX(dinosaure): see [rd], when [Async_cstruct.reader_from_socket]
          returns [Error], we set [t.state] to be [`Error] (then, we get this
          case) AND we raise exception. *)
